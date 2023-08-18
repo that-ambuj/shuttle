@@ -37,8 +37,8 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, instrument, trace};
 use uuid::Uuid;
 
-use self::deployment::DeploymentRunnable;
 pub use self::deployment::{Deployment, DeploymentState, DeploymentUpdater};
+use self::deployment::{DeploymentBuilding, DeploymentRunnable};
 pub use self::error::Error as PersistenceError;
 pub use self::log::{Level as LogLevel, Log};
 use self::resource::Resource;
@@ -386,6 +386,35 @@ impl Persistence {
         .bind(State::Running)
         .bind(State::Stopped)
         .bind(State::Completed)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    pub async fn get_all_building_deployments(&self) -> Result<Vec<DeploymentBuilding>> {
+        sqlx::query_as(
+            r#"SELECT d.id, service_id, s.name AS service_name, d.is_next
+                FROM deployments AS d
+                JOIN services AS s ON s.id = d.service_id
+                WHERE state = ?
+                ORDER BY last_update DESC"#,
+        )
+        .bind(State::Building)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(Error::from)
+    }
+
+    pub async fn get_building_deployment(&self, id: &Uuid) -> Result<Option<DeploymentBuilding>> {
+        sqlx::query_as(
+            r#"SELECT d.id, service_id, s.name AS service_name, d.is_next
+                FROM deployments AS d
+                JOIN services AS s ON s.id = d.service_id
+                WHERE state = ?
+                AND d.id = ?"#,
+        )
+        .bind(State::Building)
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -1120,6 +1149,110 @@ mod tests {
                     is_next: true,
                 },
                 DeploymentRunnable {
+                    id: id_1,
+                    service_name: "foo".to_string(),
+                    service_id: foo_id,
+                    is_next: false,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fetching_building_deployments() {
+        let (p, _) = Persistence::new_in_memory().await;
+
+        let bar_id = add_service_named(&p.pool, "bar").await.unwrap();
+        let foo_id = add_service_named(&p.pool, "foo").await.unwrap();
+        let service_id = add_service(&p.pool).await.unwrap();
+        let service_id2 = add_service(&p.pool).await.unwrap();
+
+        let id_1 = Uuid::new_v4();
+        let id_2 = Uuid::new_v4();
+        let id_3 = Uuid::new_v4();
+        let id_crashed = Uuid::new_v4();
+
+        for deployment in [
+            Deployment {
+                id: Uuid::new_v4(),
+                service_id,
+                state: State::Built,
+                last_update: Utc.with_ymd_and_hms(2022, 4, 25, 4, 29, 33).unwrap(),
+                address: None,
+                is_next: false,
+                ..Default::default()
+            },
+            Deployment {
+                id: id_1,
+                service_id: foo_id,
+                state: State::Building,
+                last_update: Utc.with_ymd_and_hms(2022, 4, 25, 4, 29, 44).unwrap(),
+                address: None,
+                is_next: false,
+                ..Default::default()
+            },
+            Deployment {
+                id: id_2,
+                service_id: bar_id,
+                state: State::Building,
+                last_update: Utc.with_ymd_and_hms(2022, 4, 25, 4, 33, 48).unwrap(),
+                address: None,
+                is_next: true,
+                ..Default::default()
+            },
+            Deployment {
+                id: id_crashed,
+                service_id: service_id2,
+                state: State::Crashed,
+                last_update: Utc.with_ymd_and_hms(2022, 4, 25, 4, 38, 52).unwrap(),
+                address: None,
+                is_next: true,
+                ..Default::default()
+            },
+            Deployment {
+                id: id_3,
+                service_id: foo_id,
+                state: State::Building,
+                last_update: Utc.with_ymd_and_hms(2022, 4, 25, 4, 42, 32).unwrap(),
+                address: None,
+                is_next: false,
+                ..Default::default()
+            },
+        ] {
+            p.insert_deployment(deployment).await.unwrap();
+        }
+
+        let building = p.get_building_deployment(&id_1).await.unwrap();
+        assert_eq!(
+            building,
+            Some(DeploymentBuilding {
+                id: id_1,
+                service_id: foo_id,
+                service_name: "foo".to_string(),
+                is_next: false,
+            })
+        );
+
+        let building = p.get_building_deployment(&id_crashed).await.unwrap();
+        assert_eq!(building, None);
+
+        let building = p.get_all_building_deployments().await.unwrap();
+        assert_eq!(
+            building,
+            [
+                DeploymentBuilding {
+                    id: id_3,
+                    service_name: "foo".to_string(),
+                    service_id: foo_id,
+                    is_next: false,
+                },
+                DeploymentBuilding {
+                    id: id_2,
+                    service_name: "bar".to_string(),
+                    service_id: bar_id,
+                    is_next: true,
+                },
+                DeploymentBuilding {
                     id: id_1,
                     service_name: "foo".to_string(),
                     service_id: foo_id,
