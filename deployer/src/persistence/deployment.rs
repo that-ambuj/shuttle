@@ -108,3 +108,23 @@ impl FromRow<'_, SqliteRow> for DeploymentRunnable {
         })
     }
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DeploymentBuilding {
+    pub id: Uuid,
+    pub service_name: String,
+    pub service_id: Ulid,
+    pub is_next: bool,
+}
+
+impl FromRow<'_, SqliteRow> for DeploymentBuilding {
+    fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            service_id: Ulid::from_string(row.try_get("service_id")?)
+                .expect("to have a valid ulid string"),
+            service_name: row.try_get("service_name")?,
+            id: row.try_get("id")?,
+            is_next: row.try_get("is_next")?,
+        })
+    }
+}
