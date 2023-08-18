@@ -45,6 +45,17 @@ pub async fn start(
 
     persistence.cleanup_invalid_states().await.unwrap();
 
+    let building_deployments = persistence.get_all_building_deployments().await.unwrap();
+
+    if building_deployments.len() > 0 {
+        error!(
+            "There are already {} deployment(s) building in the background. Please wait before starting another deployment.", 
+            building_deployments.len());
+        error!("Run `cargo shuttle deployment list` to list recent deployments.");
+
+        std::process::exit(1);
+    }
+
     let runnable_deployments = persistence.get_all_runnable_deployments().await.unwrap();
     info!(count = %runnable_deployments.len(), "stopping all but last running deploy");
 
